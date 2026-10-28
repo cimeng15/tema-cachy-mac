@@ -1,0 +1,14 @@
+[Unit]
+Description=GoldenGate Shell Dock
+After=graphical-session.target plasma-plasmashell.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/goldengateshell-topbar --dock
+Restart=always
+RestartSec=2
+Environment=QT_QPA_PLATFORM=wayland
+
+[Install]
+WantedBy=graphical-session.target

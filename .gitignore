@@ -1,0 +1,8 @@
+# Diabaikan git
+build/
+target/
+*.o
+*.so
+__pycache__/
+*.pyc
+backup*/
