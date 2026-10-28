@@ -1,0 +1,521 @@
+diff --git a/src/Model.cc b/src/Model.cc
+index f1ea06c..15eb082 100644
+--- a/src/Model.cc
++++ b/src/Model.cc
+@@ -84,15 +84,24 @@ static Direction realizeDirection(const KWin::EffectWindow* window, const QRectF
+ void Model::start(AnimationKind kind)
+ {
+     m_kind = kind;
++    m_done = false;
+ 
+     if (m_timeLine.running()) {
+         m_timeLine.toggleDirection();
+         return;
+     }
+ 
+-    if (!m_iconGeometry.isValid()) {
++    if (!m_iconGeometry.isValid() || m_iconGeometry.isEmpty()) {
+         m_iconGeometry = m_window->iconGeometry();
+     }
++    if (!m_iconGeometry.isValid() || m_iconGeometry.isEmpty()) {
++        // Jaring pengaman terakhir: tanpa target yang valid semua perhitungan
++        // jarak bisa menghasilkan NaN/inf dan quads rusak (jendela "nyangkut"
++        // di layar). Pakai kotak kecil di tepi bawah jendela sebagai target.
++        const QRectF windowRect = m_window->frameGeometry();
++        m_iconGeometry = QRectF(windowRect.center().x() - 24.0,
++            windowRect.bottom() - 48.0, 48.0, 48.0);
++    }
+     m_direction = realizeDirection(m_window, m_iconGeometry);
+     m_bumpDistance = computeBumpDistance();
+     m_shapeFactor = computeShapeFactor();
+@@ -254,7 +263,7 @@ static void transformQuadsLeft(
+     const QRectF iconRect = params.iconRect;
+     const QRectF windowRect = window->frameGeometry();
+ 
+-    const qreal distance = windowRect.right() - iconRect.right() + params.bumpDistance;
++    const qreal distance = qMax(qreal(1.0), windowRect.right() - iconRect.right() + params.bumpDistance);
+ 
+     for (int i = 0; i < quads.count(); ++i) {
+         KWin::WindowQuad& quad = quads[i];
+@@ -293,7 +302,7 @@ static void transformQuadsTop(
+     const QRectF iconRect = params.iconRect;
+     const QRectF windowRect = window->frameGeometry();
+ 
+-    const qreal distance = windowRect.bottom() - iconRect.bottom() + params.bumpDistance;
++    const qreal distance = qMax(qreal(1.0), windowRect.bottom() - iconRect.bottom() + params.bumpDistance);
+ 
+     for (int i = 0; i < quads.count(); ++i) {
+         KWin::WindowQuad& quad = quads[i];
+@@ -332,7 +341,7 @@ static void transformQuadsRight(
+     const QRectF iconRect = params.iconRect;
+     const QRectF windowRect = window->frameGeometry();
+ 
+-    const qreal distance = iconRect.left() - windowRect.left() + params.bumpDistance;
++    const qreal distance = qMax(qreal(1.0), iconRect.left() - windowRect.left() + params.bumpDistance);
+ 
+     for (int i = 0; i < quads.count(); ++i) {
+         KWin::WindowQuad& quad = quads[i];
+@@ -371,7 +380,7 @@ static void transformQuadsBottom(
+     const QRectF iconRect = params.iconRect;
+     const QRectF windowRect = window->frameGeometry();
+ 
+-    const qreal distance = iconRect.top() - windowRect.top() + params.bumpDistance;
++    const qreal distance = qMax(qreal(1.0), iconRect.top() - windowRect.top() + params.bumpDistance);
+ 
+     for (int i = 0; i < quads.count(); ++i) {
+         KWin::WindowQuad& quad = quads[i];
+@@ -431,6 +440,17 @@ static void transformQuads(
+ 
+ void Model::apply(KWin::WindowQuadList& quads) const
+ {
++    // Tanpa target yang valid jangan sentuh quads sama sekali: transformasi
++    // akan memakai jarak 0 dan menghasilkan koordinat NaN.
++    if (!m_iconGeometry.isValid() || m_iconGeometry.isEmpty()) {
++        return;
++    }
++    if (m_window->frameGeometry().isEmpty()) {
++        return;
++    }
++
++    const KWin::WindowQuadList original = quads;
++
+     switch (m_stage) {
+     case AnimationStage::Bump:
+         applyBump(quads);
+@@ -448,6 +468,18 @@ void Model::apply(KWin::WindowQuadList& quads) const
+         applySquash(quads);
+         break;
+     }
++
++    // Jaring pengaman: kalau ada koordinat NaN/inf (target di luar layar,
++    // pembagian nol, dsb.), jangan kirim quad rusak ke compositor — jendela
++    // bisa tertinggal sebagai gambar rusak di layar. Kembalikan quad asli.
++    for (const KWin::WindowQuad& quad : quads) {
++        for (int i = 0; i < 4; ++i) {
++            if (!std::isfinite(quad[i].x()) || !std::isfinite(quad[i].y())) {
++                quads = original;
++                return;
++            }
++        }
++    }
+ }
+ 
+ void Model::applyBump(KWin::WindowQuadList& quads) const
+@@ -530,7 +562,7 @@ void Model::setIconGeometry(const QRectF& rect)
+ 
+ bool Model::needsClip() const
+ {
+-    return m_clip;
++    return m_clip && m_iconGeometry.isValid() && !m_iconGeometry.isEmpty();
+ }
+ 
+ QRegion Model::clipRegion() const
+@@ -638,6 +670,8 @@ qreal Model::computeShapeFactor() const
+         Q_UNREACHABLE();
+     }
+ 
+-    const qreal minimumShapeFactor = static_cast<qreal>(movingExtent) / distanceToIcon;
++    const qreal minimumShapeFactor = distanceToIcon > 0
++        ? static_cast<qreal>(movingExtent) / distanceToIcon
++        : 1.0;
+     return qMax(m_parameters.shapeFactor, minimumShapeFactor);
+ }
+diff --git a/src/YetAnotherMagicLampEffect.cc b/src/YetAnotherMagicLampEffect.cc
+index 24b69ab..08d4b6a 100644
+--- a/src/YetAnotherMagicLampEffect.cc
++++ b/src/YetAnotherMagicLampEffect.cc
+@@ -27,10 +27,18 @@
+ // kwineffects
+ #include <core/renderviewport.h>
+ 
++#include <QDateTime>
++#include <QFile>
++#include <QJsonDocument>
++#include <QJsonObject>
++#include <QStandardPaths>
++
+ // Qt
+-#include <QTimer>
++#include <QDebug>
++#include <QPointer>
+ 
+ // std
++#include <chrono>
+ #include <cmath>
+ 
+ // Returns which screen edge a dock panel is closest to.
+@@ -69,9 +77,191 @@ static Direction dockEdge(KWin::EffectWindow* dock)
+ // Position is translated by the screen-origin offset so that an icon at local
+ // position (x, y) within the source panel maps to the same local position in
+ // the target panel — exact for identical panel layouts, reasonable otherwise.
++// GGS: target minimize diarahkan ke ikon DOCK, bukan ke panel Plasma.
++//   1) minimize_target.json  -> posisi ikon yang barusan diklik (paling akurat)
++//   2) dock_rects.json       -> peta semua ikon (untuk minimize via tombol
++//                               jendela / shortcut keyboard)
++//   3) kalau dua-duanya tidak ada -> perilaku normal (iconGeometry)
++static QString ggsNorm(const QString &s)
++{
++    QString out;
++    out.reserve(s.size());
++    for (const QChar c : s) {
++        if (c.isLetterOrNumber()) {
++            out.append(c.toLower());
++        }
++    }
++    return out;
++}
++
++// Apakah rect ini berada di dalam salah satu layar (koordinat absolut layar)?
++// Memakai area layar penuh (termasuk area yang dipakai dock/panel), karena
++// ikon dock memang berada di area strut.
++static bool ggsOnSomeScreen(const QRectF &r)
++{
++    KWin::LogicalOutput *s = KWin::effects->screenAt(r.center().toPoint());
++    if (!s) {
++        return false;
++    }
++    const QRectF full = KWinCompat::fullScreenArea(KWin::effects, s);
++    return full.isEmpty() || full.adjusted(-2.0, -2.0, 2.0, 2.0).contains(r);
++}
++
++// Dock memublikasikan posisi ikon dalam koordinat ABSOLUT layar
++// (lihat DockMain.qml::publishIconRects). Data versi lama memakai koordinat
++// relatif terhadap surface dock. Terima yang masuk akal saja.
++//
++// BUG LAMA: koordinat absolut ditambah origin dock lagi, jadi target animasi
++// jatuh di luar layar (mis. y = 1076 + 1011 = 2087 pada layar 1080p) dan
++// "genie" menyembur ke bawah layar.
++static QRectF ggsPlausibleRect(const QRectF &r, KWin::EffectWindow *dock)
++{
++    if (!(r.width() > 1.0) || !(r.height() > 1.0)) {
++        return QRectF();
++    }
++    if (ggsOnSomeScreen(r)) {
++        return r; // koordinat absolut (dipakai dock versi sekarang)
++    }
++    if (dock) {
++        const QRectF shifted = r.translated(dock->frameGeometry().topLeft());
++        if (ggsOnSomeScreen(shifted)) {
++            return shifted; // koordinat relatif terhadap dock (data versi lama)
++        }
++    }
++    return QRectF();
++}
++
++static KWin::EffectWindow *ggsDockWindow(KWin::EffectWindow *w)
++{
++    // Ketiga surface GGS (topbar, notch, dock) berasal dari binary yang sama
++    // sehingga windowClass-nya identik: "goldengateshell-topbar". Karena itu
++    // pemilihan HANYA bisa memakai geometri.
++    //
++    // Dock selalu di-anchor ke BAWAH layar. Topbar & notch menempel di ATAS
++    // (y=0). Jadi syarat yang benar: window GGS yang menempel di tepi bawah
++    // layar. Tingginya TIDAK boleh dipakai sebagai pembeda, karena dock yang
++    // sedang auto-hide hanya setinggi 4px — dulu filter "height < 60" membuat
++    // dock tidak pernah terdeteksi dan animasi minimize nyangkut.
++    //
++    // Layar dock dipilih berdasarkan layar jendela yang di-minimize (bukan
++    // posisi kursor), supaya di multi-monitor animasi tetap menuju dock yang
++    // benar.
++    KWin::LogicalOutput *s = w ? KWin::effects->screenAt(w->frameGeometry().center().toPoint())
++                               : nullptr;
++    if (!s) {
++        s = KWin::effects->screenAt(KWin::effects->cursorPos().toPoint());
++    }
++    if (!s) {
++        s = KWin::effects->activeScreen();
++    }
++    QRectF screenRect;
++    if (s) {
++        screenRect = KWin::effects->clientArea(KWin::ScreenArea, s);
++    }
++
++    KWin::EffectWindow *best = nullptr;
++    KWin::EffectWindow *bestOther = nullptr;
++    qreal bestBottom = -1e9;
++    qreal bestOtherBottom = -1e9;
++
++    for (KWin::EffectWindow *cand : KWin::effects->stackingOrder()) {
++        if (!cand->windowClass().contains(QStringLiteral("goldengateshell"), Qt::CaseInsensitive)) {
++            continue;
++        }
++        const QRectF g = cand->frameGeometry();
++        // Abaikan topbar/notch: keduanya di tepi atas.
++        if (g.top() < screenRect.center().y()) {
++            continue;
++        }
++        const bool sameScreen = s
++            ? (KWin::effects->screenAt(g.center().toPoint()) == s)
++            : true;
++        // Pilih yang paling bawah menempel.
++        if (sameScreen) {
++            if (g.bottom() > bestBottom) {
++                bestBottom = g.bottom();
++                best = cand;
++            }
++        } else if (g.bottom() > bestOtherBottom) {
++            bestOtherBottom = g.bottom();
++            bestOther = cand;
++        }
++    }
++    return best ? best : bestOther;
++}
++
++static QRectF ggsDockTargetRect(KWin::EffectWindow *w)
++{
++    const QString dir = QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation)
++        + QStringLiteral("/goldengateshell");
++
++    KWin::EffectWindow *dock = ggsDockWindow(w);
++
++    // 1) ikon yang barusan diklik di dock (paling akurat)
++    QFile f1(dir + QStringLiteral("/minimize_target.json"));
++    if (f1.open(QIODevice::ReadOnly)) {
++        const QJsonObject o = QJsonDocument::fromJson(f1.readAll()).object();
++        const qint64 ts = static_cast<qint64>(o.value(QStringLiteral("ts")).toDouble());
++        if (!o.isEmpty() && QDateTime::currentMSecsSinceEpoch() - ts <= 2500) {
++            const QRectF r(o.value(QStringLiteral("rx")).toDouble(),
++                           o.value(QStringLiteral("ry")).toDouble(),
++                           o.value(QStringLiteral("rw")).toDouble(),
++                           o.value(QStringLiteral("rh")).toDouble());
++            const QRectF valid = ggsPlausibleRect(r, dock);
++            if (!valid.isNull()) {
++                return valid;
++            }
++        }
++    }
++
++    // 2) peta semua ikon (untuk minimize via tombol jendela / shortcut keyboard)
++    if (w) {
++        QFile f2(dir + QStringLiteral("/dock_rects.json"));
++        if (f2.open(QIODevice::ReadOnly)) {
++            const QJsonObject map = QJsonDocument::fromJson(f2.readAll()).object();
++            const QString cls = ggsNorm(w->windowClass());
++            const QString cap = ggsNorm(w->caption());
++            for (auto it = map.begin(); it != map.end(); ++it) {
++                const QString key = it.key();
++                if (key.isEmpty()) {
++                    continue;
++                }
++                const bool hit = (!cls.isEmpty() && (cls.contains(key) || key.contains(cls)))
++                    || (key.size() >= 5 && cap.contains(key));
++                if (!hit) {
++                    continue;
++                }
++                const QJsonObject r = it.value().toObject();
++                const QRectF valid = ggsPlausibleRect(
++                    QRectF(r.value(QStringLiteral("x")).toDouble(),
++                           r.value(QStringLiteral("y")).toDouble(),
++                           r.value(QStringLiteral("w")).toDouble(),
++                           r.value(QStringLiteral("h")).toDouble()),
++                    dock);
++                if (!valid.isNull()) {
++                    return valid;
++                }
++            }
++        }
++    }
++
++    return QRectF();
++}
++
+ static QRectF resolveIconGeometry(KWin::EffectWindow* w)
+ {
++    const QRectF ggsRect = ggsDockTargetRect(w);
++    if (!ggsRect.isNull()) {
++        return ggsRect; // target = ikon dock GGS
++    }
++
+     const QRectF iconRect = w->iconGeometry();
++    // Tidak ada iconGeometry (jendela tidak punya ikon di task manager /
++    // compositor belum memublikasikannya). Jangan mengarang target: pemanggil
++    // akan melewati animasi sama sekali.
++    if (!iconRect.isValid() || iconRect.isEmpty()) {
++        return QRectF();
++    }
+ 
+     // Window center determines the authoritative screen (robust against decorations
+     // extending a few pixels into an adjacent screen).
+@@ -242,6 +432,9 @@ YetAnotherMagicLampEffect::YetAnotherMagicLampEffect()
+         this, &YetAnotherMagicLampEffect::slotWindowDeleted);
+     connect(KWin::effects, &KWin::EffectsHandler::activeFullScreenEffectChanged,
+         this, &YetAnotherMagicLampEffect::slotActiveFullScreenEffectChanged);
++
++    qWarning() << "GGS magiclamp v2 aktif: target ikon dock (koordinat absolut) + "
++                  "batas waktu animasi (anti jendela nyangkut)";
+ }
+ 
+ YetAnotherMagicLampEffect::~YetAnotherMagicLampEffect()
+@@ -370,10 +563,24 @@ void YetAnotherMagicLampEffect::prePaintWindow(KWin::RenderView* view, KWin::Eff
+ }
+ #endif
+ 
++// Total waktu animasi + margin. Dipakai sebagai batas keras supaya animasi
++// yang (karena alasan apa pun) tidak pernah selesai tidak menahan jendela
++// tetap terlihat selamanya.
++std::chrono::milliseconds YetAnotherMagicLampEffect::animationBudget() const
++{
++    return m_modelParameters.bumpDuration
++        + m_modelParameters.stretchDuration
++        + m_modelParameters.unminimizeStretchDuration
++        + m_modelParameters.squashDuration
++        + std::chrono::milliseconds(2000);
++}
++
+ void YetAnotherMagicLampEffect::postPaintScreen()
+ {
++    const auto now = KWinCompat::monotonicTimestamp();
+     for (auto it = m_animations.begin(); it != m_animations.end();) {
+-        if (it->model.done()) {
++        const bool expired = it->deadline.count() > 0 && now >= it->deadline;
++        if (it->model.done() || expired) {
+             unredirect(it.key());
+             it = m_animations.erase(it);
+         } else {
+@@ -385,7 +592,7 @@ void YetAnotherMagicLampEffect::postPaintScreen()
+     KWin::effects->postPaintScreen();
+ }
+ 
+-void YetAnotherMagicLampEffect::paintWindow(const KWin::RenderTarget& renderTarget,
++bool YetAnotherMagicLampEffect::paintWindow(const KWin::RenderTarget& renderTarget,
+     const KWin::RenderViewport& viewport,
+     KWin::EffectWindow* w, int mask,
+     const KWin::Region& region,
+@@ -395,11 +602,12 @@ void YetAnotherMagicLampEffect::paintWindow(const KWin::RenderTarget& renderTarg
+     if (it != m_animations.constEnd() && it->model.needsClip()) {
+         const KWin::Region clipLogical(it->model.clipRegion());
+         const KWin::Region clip = viewport.mapToDeviceCoordinatesAligned(clipLogical);
+-        KWin::effects->paintWindow(renderTarget, viewport, w, mask, clip, data);
+-        return;
++        (void)KWin::effects->paintWindow(renderTarget, viewport, w, mask, clip, data);
++        return true;
+     }
+ 
+-    KWin::effects->paintWindow(renderTarget, viewport, w, mask, region, data);
++    (void)KWin::effects->paintWindow(renderTarget, viewport, w, mask, region, data);
++    return true;
+ }
+ 
+ void YetAnotherMagicLampEffect::apply(KWin::EffectWindow* window, int mask, KWin::WindowPaintData& data, KWin::WindowQuadList& quads)
+@@ -453,32 +661,27 @@ void YetAnotherMagicLampEffect::startMinimize(KWin::EffectWindow* w)
+         return;
+     }
+ 
+-    const QRectF iconRect = w->iconGeometry();
+-    if (!iconRect.isValid()) {
+-        // On Wayland secondary screens the Plasma taskbar sets iconGeometry
+-        // asynchronously (after QML layout). Keep the window visible and retry
+-        // once the geometry arrives.
+-        if (m_pendingMinimize.contains(w)) {
+-            return;
+-        }
+-        m_pendingMinimize[w] = KWin::EffectWindowVisibleRef(w, KWin::EffectWindow::PAINT_DISABLED_BY_MINIMIZE);
+-        QPointer<KWin::EffectWindow> weakRef(w);
+-        QTimer::singleShot(150, this, [this, weakRef]() {
+-            KWin::EffectWindow* win = weakRef.data();
+-            m_pendingMinimize.remove(win);
+-            if (win && win->isMinimized()) {
+-                startMinimize(win);
+-            }
+-        });
++    const QRectF target = resolveIconGeometry(w);
++    if (target.isNull()) {
++        // Tidak ada target animasi yang bisa dipakai (tidak ada ikon dock dan
++        // compositor tidak memublikasikan iconGeometry untuk jendela ini).
++        //
++        // BUG LAMA: di sini kode menahan jendela tetap terlihat memakai
++        // EffectWindowVisibleRef lalu mencoba ulang tiap 150 ms tanpa batas.
++        // Kalau target tidak pernah datang, jendela yang sudah minimized
++        // dipaksa terus digambar -> aplikasi tampak "macet" dan masih tampil
++        // di layar. Sekarang: tanpa target = tanpa animasi, minimize normal.
++        m_animations.remove(w);
+         return;
+     }
+ 
+     AnimationData& animData = m_animations[w];
+     animData.model.setWindow(w);
+     animData.model.setParameters(m_modelParameters);
+-    animData.model.setIconGeometry(resolveIconGeometry(w));
++    animData.model.setIconGeometry(target);
+     animData.model.start(Model::AnimationKind::Minimize);
+     animData.visibleRef = KWin::EffectWindowVisibleRef(w, KWin::EffectWindow::PAINT_DISABLED_BY_MINIMIZE);
++    animData.deadline = KWinCompat::monotonicTimestamp() + animationBudget();
+ 
+     redirect(w);
+ 
+@@ -491,16 +694,18 @@ void YetAnotherMagicLampEffect::startUnminimize(KWin::EffectWindow* w)
+         return;
+     }
+ 
+-    const QRectF iconRect = w->iconGeometry();
+-    if (!iconRect.isValid()) {
++    const QRectF target = resolveIconGeometry(w);
++    if (target.isNull()) {
++        m_animations.remove(w);
+         return;
+     }
+ 
+     AnimationData& animData = m_animations[w];
+     animData.model.setWindow(w);
+     animData.model.setParameters(m_modelParameters);
+-    animData.model.setIconGeometry(resolveIconGeometry(w));
++    animData.model.setIconGeometry(target);
+     animData.model.start(Model::AnimationKind::Unminimize);
++    animData.deadline = KWinCompat::monotonicTimestamp() + animationBudget();
+ 
+     redirect(w);
+ 
+@@ -509,14 +714,12 @@ void YetAnotherMagicLampEffect::startUnminimize(KWin::EffectWindow* w)
+ 
+ void YetAnotherMagicLampEffect::slotWindowDeleted(KWin::EffectWindow* w)
+ {
+-    m_pendingMinimize.remove(w);
+     m_animations.remove(w);
+ }
+ 
+ void YetAnotherMagicLampEffect::slotActiveFullScreenEffectChanged()
+ {
+     if (KWin::effects->activeFullScreenEffect() != nullptr) {
+-        m_pendingMinimize.clear();
+         for (auto it = m_animations.constBegin(); it != m_animations.constEnd(); ++it) {
+             unredirect(it.key());
+         }
+diff --git a/src/YetAnotherMagicLampEffect.h b/src/YetAnotherMagicLampEffect.h
+index 7b6a441..eaad014 100644
+--- a/src/YetAnotherMagicLampEffect.h
++++ b/src/YetAnotherMagicLampEffect.h
+@@ -31,6 +31,10 @@
+ struct AnimationData {
+     Model model;
+     KWin::EffectWindowVisibleRef visibleRef;
++    // Batas waktu keras (steady_clock). Kalau animasi belum selesai sampai
++    // waktu ini, animasi dipaksa berhenti supaya jendela tidak tertahan
++    // tetap tampil di layar (bug "minimize macet masih tampil").
++    std::chrono::milliseconds deadline{0};
+ };
+ 
+ class YetAnotherMagicLampEffect : public KWin::OffscreenEffect {
+@@ -54,7 +58,7 @@ public:
+ #endif
+     void postPaintScreen() override;
+ 
+-    void paintWindow(const KWin::RenderTarget& renderTarget, const KWin::RenderViewport& viewport,
++    bool paintWindow(const KWin::RenderTarget& renderTarget, const KWin::RenderViewport& viewport,
+         KWin::EffectWindow* w, int mask, const KWin::Region& region,
+         KWin::WindowPaintData& data) override;
+ 
+@@ -75,13 +79,12 @@ private Q_SLOTS:
+ private:
+     void startMinimize(KWin::EffectWindow* w);
+     void startUnminimize(KWin::EffectWindow* w);
++    std::chrono::milliseconds animationBudget() const;
+ 
+     Model::Parameters m_modelParameters;
+     int m_gridResolution;
+ 
+     QMap<KWin::EffectWindow*, AnimationData> m_animations;
+-    // Windows waiting for iconGeometry to become valid before animation starts
+-    QMap<KWin::EffectWindow*, KWin::EffectWindowVisibleRef> m_pendingMinimize;
+ };
+ 
+ inline int YetAnotherMagicLampEffect::requestedEffectChainPosition() const

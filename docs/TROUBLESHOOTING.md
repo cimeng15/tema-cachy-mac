@@ -87,24 +87,52 @@ systemctl --user mask 'app-org.kde.plasma\x2dfallback\x2dsession\x2drestore@auto
 
 ---
 
-## Magic lamp tidak aktif (minimize tidak mengecil ke dock)
+## Magic lamp: minimize "macet" dan jendela masih tampil
 
-**Cek status:**
+**Gejala:** aplikasi di-minimize tapi jendelanya tetap nongol di layar (beku),
+tidak bisa diklik, dan baru hilang setelah logout.
+
+**Penyebab (sudah diperbaiki di efek v2):**
+
+1. Efek menahan jendela tetap digambar (`EffectWindowVisibleRef`) sambil
+   menunggu `iconGeometry` yang tidak pernah datang, lalu mengulang tiap 150 ms
+   tanpa batas. Jendela yang sudah minimized jadi dipaksa terus tampil.
+2. Kalau target tidak diketahui, efek tetap memulai animasi dengan target
+   kosong → quads NaN → jendela tertinggal sebagai gambar rusak.
+3. Koordinat ikon dock (sudah absolut) masih ditambah origin surface dock,
+   jadi target animasi jatuh di luar layar (mis. y = 1076 + 1011 = 2087 pada
+   layar 1080p) dan animasi "menyembur" ke bawah.
+
+Sekarang: tanpa target = tanpa animasi (minimize normal), ada batas waktu keras
+per animasi, quads divalidasi, dan koordinat ikon dipakai apa adanya.
+
+**Cek status + uji minimize sungguhan:**
 
 ```bash
-~/.local/share/ggs-magiclamp/check-magiclamp.sh
+~/Goldengate-mac-mod-Theme/check-magiclamp.sh
 ```
 
-Kalau `loaded=false`:
+Skrip ini memotret jendela sebelum & sesudah minimize, lalu membandingkan
+pixel-nya. Kalau jendela masih tampil, hasilnya `❌ ... MASIH TAMPIL`.
 
-1. **Logout lalu login** — KWin harus restart agar `.so` baru dimuat
-2. Kalau masih gagal, build ulang:
+**Kalau `❌ KWin sudah jalan SEBELUM .so baru dipasang`:**
+
+KWin tidak bisa memuat ulang binary efek yang sudah ada di memori
+(`QPluginLoader` menyimpan `.so` lama). Logout → login sekali. Itu wajib,
+`unloadEffect`/`loadEffect` lewat D-Bus **tidak** cukup.
+
+**Build + pasang ulang (setelah ubah kode):**
 
 ```bash
-cd ~/.local/share/ggs-magiclamp
-./build-magiclamp.sh
-./install-magiclamp.sh
+cd ~/Goldengate-mac-mod-Theme
+./build-magiclamp.sh            # build + salin ke ~/.local
+./build-magiclamp.sh --install  # pasang ke /usr/lib (KWin memakai yang ini!)
 ```
+
+> Catatan penting: KWin memuat plugin dari `/usr/lib/qt6/plugins/kwin/effects/plugins/`,
+> **bukan** dari `~/.local/lib/qt6/plugins/...`. Build yang hanya disalin ke
+> `~/.local` tidak akan pernah dipakai — ini penyebab kenapa rebuild sebelumnya
+> tidak berefek.
 
 **Kembalikan efek bawaan:**
 

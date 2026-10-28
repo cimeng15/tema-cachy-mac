@@ -1,18 +1,33 @@
 #!/usr/bin/env bash
-# Batalkan efek magic lamp yang dipatch: kembalikan plugin asli + matikan efeknya.
-set -euo pipefail
+# Matikan / cabut efek magic lamp versi GGS:
+#   - matikan efek di kwinrc
+#   - kembalikan plugin asli (.orig) kalau ada
+#   - kalau tidak ada backup, hapus plugin hasil build dari /usr/lib
+#   - hapus salinan di ~/.local
+#
+# Setelah selesai: logout -> login (KWin tidak bisa melepas .so dari memori).
+set -uo pipefail
 
-SO=/usr/lib/qt6/plugins/kwin/effects/plugins/libkwin4_effect_yetanothermagiclamp.so
+ID=libkwin4_effect_yetanothermagiclamp
+SO="/usr/lib/qt6/plugins/kwin/effects/plugins/$ID.so"
+SO_LOCAL="$HOME/.local/lib/qt6/plugins/kwin/effects/plugins/$ID.so"
 
-echo "==> mematikan efek"
-kwriteconfig6 --file kwinrc --group Plugins --key kwin4_effect_yetanothermagiclampEnabled false
+echo "==> mematikan efek di kwinrc"
+kwriteconfig6 --file kwinrc --group Plugins --key libkwin4_effect_yetanothermagiclampEnabled false || true
+kwriteconfig6 --file kwinrc --group Plugins --key kwin4_effect_yetanothermagiclampEnabled false || true
+kwriteconfig6 --file kwinrc --group Plugins --key yetanothermagiclampEnabled false || true
+qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure >/dev/null 2>&1 || true
 
 if [[ -f "$SO.orig" ]]; then
-    echo "==> mengembalikan plugin asli (butuh password)"
+    echo "==> mengembalikan plugin asli dari $SO.orig (butuh password)"
     pkexec install -m 755 "$SO.orig" "$SO"
+elif [[ -f "$SO" ]]; then
+    echo "==> tidak ada backup .orig — menghapus plugin hasil build (butuh password)"
+    pkexec rm -f "$SO"
 else
-    echo "==> tidak ada backup ($SO.orig), lewati"
+    echo "==> plugin di /usr/lib sudah tidak ada, lewati"
 fi
 
-qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure || true
-echo "Selesai. Efek dimatikan; minimize kembali memakai animasi bawaan Plasma."
+[[ -f "$SO_LOCAL" ]] && rm -f "$SO_LOCAL" && echo "==> salinan ~/.local dihapus"
+
+echo "Selesai. Logout -> login supaya KWin benar-benar melepas plugin lama."

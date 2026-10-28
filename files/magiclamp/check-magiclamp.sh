@@ -1,71 +1,177 @@
 #!/usr/bin/env bash
-# Cek apakah efek "Yet Another Magic Lamp" versi GGS sudah aktif dan
-# mengarahkan animasi minimize ke DOCK (bukan panel Plasma).
+# Verifikasi efek "Yet Another Magic Lamp" versi GGS (v2).
 #
-# Pakai setelah logout -> login (KWin harus restart agar .so baru dimuat).
+# Yang dicek:
+#   1. file plugin mana yang dipakai KWin (KWin memakai /usr/lib, BUKAN ~/.local)
+#   2. efek termuat + build v2 aktif (log "GGS magiclamp v2")
+#   3. koordinat ikon dock (dock_rects.json) masih masuk akal / di dalam layar
+#   4. UJI MINIMIZE SUNGGUHAN: jendela harus benar-benar hilang dari layar
+#      (kalau masih tampil = bug "minimize macet masih tampil" kambuh)
+#
+# Jalankan setelah logout -> login.
 set -uo pipefail
+
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
-    ls "$XDG_RUNTIME_DIR"/wayland-* >/dev/null 2>&1 && \
-        export WAYLAND_DISPLAY="$(basename "$(ls "$XDG_RUNTIME_DIR"/wayland-* | head -1)")"
+    sock="$(ls "$XDG_RUNTIME_DIR"/wayland-* 2>/dev/null | head -1 || true)"
+    [[ -n "$sock" ]] && export WAYLAND_DISPLAY="$(basename "$sock")"
 fi
 
-SO=/usr/lib/qt6/plugins/kwin/effects/plugins/libkwin4_effect_yetanothermagiclamp.so
+ID=libkwin4_effect_yetanothermagiclamp
+SO_USR="/usr/lib/qt6/plugins/kwin/effects/plugins/$ID.so"
+SO_LOCAL="$HOME/.local/lib/qt6/plugins/kwin/effects/plugins/$ID.so"
+RECTS="$HOME/.cache/goldengateshell/dock_rects.json"
+TMP="$(mktemp -d /tmp/ggs-check-XXXXXX)"
+fail=0
+
+ok()   { echo "   ✅ $*"; }
+bad()  { echo "   ❌ $*"; fail=1; }
+warn() { echo "   ⚠️  $*"; }
+
+kwin_script() { # $1 = file js
+    local sid
+    sid=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$1" "ggs$$" 2>/dev/null | tr -dc '0-9')
+    [[ -z "$sid" ]] && return 1
+    qdbus6 org.kde.KWin /Scripting/Script"$sid" org.kde.kwin.Script.run >/dev/null 2>&1
+    qdbus6 org.kde.KWin /Scripting/Script"$sid" org.kde.kwin.Script.stop >/dev/null 2>&1
+}
 
 echo "1) Plugin di disk"
-if [[ -f "$SO" ]]; then
-    echo "   ukuran : $(stat -c%s "$SO") byte   (versi GGS ≈ 115440)"
-    echo "   tanggal: $(stat -c%y "$SO" | cut -d. -f1)"
+if [[ -f "$SO_USR" ]]; then
+    ok "$SO_USR ($(stat -c%s "$SO_USR") byte, $(stat -c%y "$SO_USR" | cut -d. -f1))"
 else
-    echo "   TIDAK ADA — jalankan ./install-magiclamp.sh"
+    bad "$SO_USR tidak ada — jalankan ./build-magiclamp.sh --install"
+fi
+if [[ -f "$SO_USR" && -f "$SO_LOCAL" ]] && ! cmp -s "$SO_USR" "$SO_LOCAL"; then
+    warn "$SO_LOCAL berbeda isi, tapi KWin memakai yang di /usr/lib (tidak masalah)"
 fi
 
-echo "2) Status efek"
-for id in libkwin4_effect_yetanothermagiclamp kwin4_effect_yetanothermagiclamp; do
-    printf "   %-40s %s\n" "$id" \
-        "$(qdbus6 org.kde.KWin /Effects org.kde.kwin.Effects.isEffectLoaded "$id" 2>/dev/null || echo '?')"
-done
+echo "2) Status efek di KWin"
+loaded=$(qdbus6 org.kde.KWin /Effects org.kde.kwin.Effects.isEffectLoaded "$ID" 2>/dev/null)
+if [[ "$loaded" == "true" ]]; then
+    ok "efek termuat"
+else
+    bad "efek TIDAK termuat — aktifkan di System Settings > Desktop Effects"
+fi
+kwin_pid=$(pgrep -x kwin_wayland | head -1)
+so_newer=0
+if [[ -n "$kwin_pid" && -f "$SO_USR" ]]; then
+    kwin_start=$(date -d "$(ps -o lstart= -p "$kwin_pid")" +%s 2>/dev/null || echo 0)
+    so_mtime=$(stat -c %Y "$SO_USR" 2>/dev/null || echo 0)
+    (( so_mtime > kwin_start + 2 )) && so_newer=1
+fi
+marker=$(journalctl --user -b -o cat --no-pager 2>/dev/null | grep -c "GGS magiclamp v2")
+if [[ $so_newer -eq 1 ]]; then
+    bad "KWin (pid $kwin_pid) sudah jalan SEBELUM .so baru dipasang — binary baru belum dimuat."
+    echo "      .so: $(stat -c%y "$SO_USR" | cut -d. -f1)  vs  KWin start: $(ps -o lstart= -p "$kwin_pid")"
+    echo "      Logout -> login sekali, lalu jalankan skrip ini lagi."
+elif [[ "${marker:-0}" -gt 0 ]]; then
+    ok "build v2 aktif di sesi ini ($marker baris log)"
+else
+    warn "log 'GGS magiclamp v2' belum muncul (bisa jadi build lama)."
+fi
 
-echo "3) Peta ikon dock (dock_rects.json)"
-RECTS="$HOME/.cache/goldengateshell/dock_rects.json"
+echo "3) Peta ikon dock ($RECTS)"
 if [[ -f "$RECTS" ]]; then
-    echo "   ada, $(stat -c%s "$RECTS") byte, diubah $(stat -c%y "$RECTS" | cut -d. -f1)"
-    head -c 160 "$RECTS"; echo " ..."
+    python3 - "$RECTS" <<'PY'
+import json, sys, time, os
+p = sys.argv[1]
+age = time.time() - os.path.getmtime(p)
+d = json.load(open(p))
+print(f"   {'✅' if age < 5 else '⚠️ '} {len(d)} ikon, diperbarui {age:.1f} detik lalu")
+odd = [k for k, v in d.items()
+       if v.get("y", 0) > 4000 or v.get("x", 0) > 8000 or v.get("w", 0) < 8]
+if odd:
+    print("   ❌ entri tidak wajar:", ", ".join(odd[:5]))
+    sys.exit(1)
+k, v = next(iter(d.items()))
+print(f"   contoh: {k} -> x={v['x']} y={v['y']} {v['w']}x{v['h']}")
+if v["y"] > 2160:
+    print("   ❌ koordinat ikon di luar layar (target animasi akan salah)")
+    sys.exit(1)
+PY
+    [[ $? -eq 0 ]] || fail=1
 else
-    echo "   TIDAK ADA — dock tidak memublikasikan posisi ikon"
+    bad "tidak ada — dock belum memublikasikan posisi ikon"
 fi
 
-echo "4) Uji minimize (buka Kate lalu minimize)"
-~/.local/bin/ggs_window_activate.py --launch "kate" >/dev/null 2>&1
-sleep 5
-cat > /tmp/ggs-checkmin.js <<'EOF'
+echo "4) Uji minimize sungguhan"
+APP="${GGS_TEST_APP:-kcalc}"
+command -v "$APP" >/dev/null 2>&1 || APP=kate
+if ! command -v "$APP" >/dev/null 2>&1; then
+    warn "tidak ada aplikasi uji (kcalc/kate) — lewati uji minimize"
+else
+    ("$APP" >/dev/null 2>&1 &) ; sleep 3
+
+    cat > "$TMP/geom.js" <<EOF
 var ws = workspace.windowList();
 for (var i = 0; i < ws.length; i++) {
     var w = ws[i];
-    if ((w.resourceClass || "").toString().indexOf("kate") !== -1 && !w.minimized) {
-        w.minimized = true;
-        print("GGSCHEK=minimized");
-        break;
+    if ((w.resourceClass || "").toString().indexOf("$APP") !== -1 && !w.minimized) {
+        var g = w.frameGeometry;
+        print("GGSCHK|" + g.x + "," + g.y + "," + g.width + "," + g.height);
     }
 }
 EOF
-SID=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript /tmp/ggs-checkmin.js ggscheck 2>/dev/null | tr -dc '0-9')
-qdbus6 org.kde.KWin /Scripting/Script$SID org.kde.kwin.Script.run >/dev/null 2>&1
-sleep 2
+    kwin_script "$TMP/geom.js"
+    sleep 1
+    geom=$(journalctl --user --since "10 sec ago" -o cat --no-pager 2>/dev/null \
+        | grep -o "GGSCHK|[0-9,-]*" | tail -1 | cut -d'|' -f2)
 
-echo "5) Apa kata efek (log KWin)"
-LOG=$(journalctl --user -u plasma-kwin_wayland --since "25 sec ago" -o cat --no-pager 2>/dev/null | grep -E "GGS\] target" | tail -3)
-if [[ -n "$LOG" ]]; then
-    echo "$LOG" | sed 's/^/   /'
-    if echo "$LOG" | grep -q "DOCK"; then
-        echo "   ✅ Minimize sudah mengarah ke DOCK"
+    if [[ -z "$geom" ]]; then
+        warn "jendela $APP tidak ditemukan — lewati uji minimize"
     else
-        echo "   ⚠️  Masih fallback ke panel (cek apakah ikon app ada di dock)"
+        IFS=, read -r gx gy gw gh <<< "$geom"
+        spectacle -b -n -o "$TMP/before.png" >/dev/null 2>&1
+        cat > "$TMP/min.js" <<EOF
+var ws = workspace.windowList();
+for (var i = 0; i < ws.length; i++) {
+    var w = ws[i];
+    if ((w.resourceClass || "").toString().indexOf("$APP") !== -1 && !w.minimized) {
+        w.minimized = true;
+        print("GGSCHK|minimized");
+    }
+}
+EOF
+        kwin_script "$TMP/min.js"
+        sleep 2.5
+        spectacle -b -n -o "$TMP/after.png" >/dev/null 2>&1
+
+        if ! command -v magick >/dev/null 2>&1; then
+            warn "ImageMagick tidak ada — cek manual: jendela $APP harus hilang dari layar"
+        else
+            magick "$TMP/before.png" -crop "${gw}x${gh}+${gx}+${gy}" +repage "$TMP/b.png"
+            magick "$TMP/after.png"  -crop "${gw}x${gh}+${gx}+${gy}" +repage "$TMP/a.png"
+            rmse=$(magick compare -metric RMSE "$TMP/b.png" "$TMP/a.png" null: 2>&1 \
+                | sed -n 's/.*(\([0-9.]*\)).*/\1/p')
+            rmse=${rmse:-1}
+            if awk "BEGIN{exit !($rmse < 0.02)}"; then
+                bad "jendela $APP MASIH TAMPIL setelah minimize (RMSE $rmse) — bug kambuh"
+                echo "      bukti: $TMP/before.png vs $TMP/after.png"
+            else
+                ok "jendela $APP hilang dari layar setelah minimize (RMSE $rmse)"
+            fi
+        fi
+
+        cat > "$TMP/close.js" <<EOF
+var ws = workspace.windowList();
+for (var i = 0; i < ws.length; i++) {
+    var w = ws[i];
+    if ((w.resourceClass || "").toString().indexOf("$APP") !== -1) {
+        w.minimized = false;
+        w.closeWindow();
+    }
+}
+EOF
+        kwin_script "$TMP/close.js"
     fi
-else
-    echo "   ❌ Tidak ada log [GGS] — KWin masih memakai .so lama."
-    echo "      Logout -> login sekali, lalu jalankan script ini lagi."
 fi
 
-# kembalikan Kate
-~/.local/bin/ggs_window_activate.py toggle kate >/dev/null 2>&1
+echo
+if [[ $fail -eq 0 ]]; then
+    echo "HASIL: SEMUA CEK LULUS ✅"
+else
+    echo "HASIL: ADA YANG GAGAL ❌  (lihat tanda ❌ di atas)"
+fi
+echo "Screenshot uji (kalau ada): $TMP"
+exit $fail
