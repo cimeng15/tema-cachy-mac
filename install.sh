@@ -19,9 +19,10 @@ die()  { printf "  %s✗%s %s\n" "$RED" "$RST" "$*" >&2; exit 1; }
 STEPS=(
   "01|Dependensi paket (butuh password)"
   "02|GoldenGate Shell (build + pasang + service)"
-  "03|Efek magic lamp (minimize ke ikon dock)"
-  "04|Bersihkan session restore (cegah app terbuka otomatis)"
-  "05|Ekstra (pin dock, setelan auto-hide, ikon)"
+  "03|Tema WhiteSur (warna, ikon, cursor, GTK, aurorae)"
+  "04|Efek magic lamp (minimize ke ikon dock)"
+  "05|Bersihkan session restore (cegah app terbuka otomatis)"
+  "06|Ekstra (pin dock, setelan auto-hide, ikon)"
 )
 
 banner() {

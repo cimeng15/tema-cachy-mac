@@ -201,3 +201,63 @@ rm -rf ~/.local/share/kwin/scripts/ggs_kwin_script
 ```
 
 Layout desktop bisa dikembalikan lewat Plasma System Settings.
+
+---
+
+## Tema WhiteSur gagal dipasang
+
+Step 03 mem-build paket AUR sendiri (tanpa yay/paru). Kalau gagal:
+
+**Cek dependensi build:**
+
+```bash
+sudo pacman -S --needed base-devel git sassc inkscape optipng
+```
+
+**Build manual satu paket:**
+
+```bash
+cd ~/.cache/ggs-aur-build/whitesur-kde-theme
+makepkg -sf
+sudo pacman -U *.pkg.tar.zst
+```
+
+**Kalau `whitesur-kde-theme` gagal**, color scheme tidak tersedia dan panel
+Appearance GGS akan gagal berpindah tema. Cek yang terpasang:
+
+```bash
+ls /usr/share/color-schemes/ | grep -i white
+```
+
+**Alternatif tanpa AUR:** pakai color scheme bawaan sistem
+
+```bash
+plasma-apply-colorscheme BreezeDark
+kwriteconfig6 --file kdeglobals --group General --key ColorScheme BreezeDark
+```
+
+---
+
+## Ikon KDE Connect masih putih / tidak berwarna
+
+Step 06 memasang ikon ke `~/.local/share/icons/hicolor/scalable/apps/`.
+Kalau belum berubah:
+
+```bash
+# segarkan cache ikon
+gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor
+kbuildsycoca6
+systemctl --user restart ggs-dock
+```
+
+Kalau masih putih, tema ikon aktif mungkin punya prioritas lebih tinggi.
+Pasang langsung ke tema tersebut:
+
+```bash
+for t in WhiteSur WhiteSur-dark breeze breeze-dark; do
+  d="/usr/share/icons/$t/apps/scalable"
+  [ -d "$d" ] && sudo cp files/icons/kdeconnect.svg "$d/kdeconnect.svg"
+done
+```
+
+File sumber ikon ada di repo: `files/icons/kdeconnect.svg`.

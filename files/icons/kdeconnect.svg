@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+  Ikon KDE Connect versi berwarna, gaya macOS rounded-square.
+  Dipakai dock GGS karena tema ikon (termasuk WhiteSur) hanya menyediakan
+  varian putih/monokrom untuk aplikasi ini.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3FA9F5"/>
+      <stop offset="0.55" stop-color="#1B7FD4"/>
+      <stop offset="1" stop-color="#0F5FA8"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="phone" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#DCE9F5"/>
+    </linearGradient>
+    <filter id="shadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0A2C4D" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <!-- Rounded square body -->
+  <rect x="8" y="8" width="240" height="240" rx="54" ry="54" fill="url(#bg)"/>
+  <!-- Top gloss -->
+  <rect x="8" y="8" width="240" height="118" rx="54" ry="54" fill="url(#gloss)"/>
+
+  <!-- Phone outline -->
+  <g filter="url(#shadow)">
+    <rect x="104" y="52" width="66" height="118" rx="12" ry="12" fill="url(#phone)"/>
+    <rect x="112" y="64" width="50" height="88" rx="6" ry="6" fill="#0F5FA8" opacity="0.92"/>
+    <circle cx="137" cy="160" r="5" fill="#0F5FA8" opacity="0.65"/>
+  </g>
+
+  <!-- Monitor / laptop -->
+  <g filter="url(#shadow)">
+    <rect x="46" y="96" width="86" height="60" rx="8" ry="8" fill="url(#phone)"/>
+    <rect x="54" y="104" width="70" height="44" rx="4" ry="4" fill="#0F5FA8" opacity="0.92"/>
+    <rect x="34" y="160" width="110" height="9" rx="4.5" ry="4.5" fill="#E8F1FA"/>
+  </g>
+
+  <!-- Connection waves -->
+  <g stroke="#FFFFFF" stroke-linecap="round" fill="none" opacity="0.95">
+    <path d="M96 128 Q 122 100 148 128" stroke-width="7"/>
+    <path d="M108 138 Q 126 120 144 138" stroke-width="6" opacity="0.8"/>
+    <circle cx="126" cy="146" r="5.5" fill="#FFFFFF" stroke="none"/>
+  </g>
+</svg>
